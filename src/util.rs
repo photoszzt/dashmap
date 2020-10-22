@@ -18,6 +18,38 @@ pub fn map_in_place_2<T, U, F: FnOnce(U, T) -> T>((k, v): (U, &mut T), f: F) {
     }
 }
 
+pub fn run_fnonce_with_result<T, E>(f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    // # Safety
+    //
+    // If the closure panics, we must abort otherwise we could double drop `T`
+    let _promote_panic_to_abort = AbortOnPanic;
+    f()
+}
+
+pub fn run_fnonce(f: impl FnOnce()) {
+    // # Safety
+    //
+    // If the closure panics, we must abort otherwise we could double drop `T`
+    let _promote_panic_to_abort = AbortOnPanic;
+    f();
+}
+
+pub fn run_fnonce_with_val<V, T, E>(v: &V, f: impl FnOnce(&V) -> Result<T, E>) -> Result<T, E> {
+    // # Safety
+    //
+    // If the closure panics, we must abort otherwise we could double drop `T`
+    let _promote_panic_to_abort = AbortOnPanic;
+    f(v)
+}
+
+pub fn run_fnonce_with_2val<K, V>(k: &K, v: &V, f: impl FnOnce(&K, &V)) {
+    // # Safety
+    //
+    // If the closure panics, we must abort otherwise we could double drop `T`
+    let _promote_panic_to_abort = AbortOnPanic;
+    f(k, v);
+}
+
 /// # Safety
 ///
 /// Requires that you ensure the reference does not become invalid.
@@ -99,7 +131,7 @@ impl<T> SharedValue<T> {
     }
 }
 
-struct AbortOnPanic;
+pub(crate) struct AbortOnPanic;
 
 impl Drop for AbortOnPanic {
     fn drop(&mut self) {

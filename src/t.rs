@@ -32,12 +32,41 @@ pub trait Map<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> {
 
     fn _insert(&self, key: K, value: V) -> Option<V>;
 
+    fn _insert_with(&self, key: K, value: V, f: impl FnOnce()) -> Option<V>;
+
+    fn _insert_and_post_process<T, E>(
+        &self,
+        key: K,
+        value: V,
+        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<V>, Result<T, E>);
+
     fn _remove<Q>(&self, key: &Q) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized;
 
     fn _remove_if<Q>(&self, key: &Q, f: impl FnOnce(&K, &V) -> bool) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized;
+
+    fn _remove_and_post_process_if_key_exist<Q>(
+        &self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&K, &V),
+    ) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized;
+
+    fn _remove_and_post_process<Q, T, E>(
+        &self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&Q, &V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<(K, V)>, Result<T, E>)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized;
@@ -51,6 +80,25 @@ pub trait Map<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> {
         Self: Sized;
 
     fn _get<Q>(&'a self, key: &Q) -> Option<Ref<'a, K, V, S>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized;
+
+    fn _get_with<Q, T, E>(
+        &'a self,
+        key: &Q,
+        post_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized;
+
+    fn _get_and_post_process<Q, T, E>(
+        &'a self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized;

@@ -326,6 +326,29 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         self._insert(key, value)
     }
 
+    /// Inserts a key and a value into the map. After insert the value, f will execute before return.
+    ///
+    /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
+    ///
+    pub fn insert_with(&self, key: K, value: V, f: impl FnOnce()) -> Option<V> {
+        self._insert_with(key, value, f)
+    }
+
+    /// Inserts a key and a value into the map. After insert the value, execute key_exists_func if
+    /// key already present before this insert or not_exists_func if key is newly insert.
+    ///
+    /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
+    ///
+    pub fn insert_and_post_process<T, E>(
+        &self,
+        key: K,
+        value: V,
+        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<V>, Result<T, E>) {
+        self._insert_and_post_process(key, value, key_exists_func, not_exists_func)
+    }
+
     /// Removes an entry from the map, returning the key and value if they existed in the map.
     ///
     /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
@@ -376,6 +399,33 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         Q: Hash + Eq + ?Sized,
     {
         self._remove_if(key, f)
+    }
+
+    /// Removes an entry from the map, returning the key and value
+    /// It will execute the function post_func if key exists
+    pub fn remove_and_post_process_if_key_exist<Q>(
+        &self,
+        key: &Q,
+        post_func: impl FnOnce(&K, &V),
+    ) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self._remove_and_post_process_if_key_exist(key, post_func)
+    }
+
+    pub fn remove_and_post_process<Q, T, E>(
+        &self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&Q, &V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<(K, V)>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self._remove_and_post_process(key, key_exists_func, not_exists_func)
     }
 
     /// Creates an iterator over a DashMap yielding immutable references.
@@ -458,6 +508,36 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         Q: Hash + Eq + ?Sized,
     {
         self._get_mut(key)
+    }
+
+    /// Get a immutable reference to an entry in the map. Before return execute `post_func`
+    ///
+    /// **Locking behaviour:** May deadlock if called when holding a mutable reference into the map.
+    pub fn get_with<Q, T, E>(
+        &'a self,
+        key: &Q,
+        post_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self._get_with(key, post_func)
+    }
+
+    /// Get a immutable reference to an entry in the map. Before return execute `key_exists_func`
+    /// if key exists or execute not_exists_func if key doesn't exists. 
+    pub fn get_and_post_process<Q, T, E>(
+        &'a self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized
+    {
+        self._get_and_post_process(key, key_exists_func, not_exists_func)
     }
 
     /// Remove excess capacity to reduce memory usage.
@@ -676,6 +756,45 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
             .map(|v| v.into_inner())
     }
 
+    fn _insert_with(&self, key: K, value: V, f: impl FnOnce()) -> Option<V> {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let mut shard = unsafe { self._yield_write_shard(idx) };
+
+        let retv = shard
+            .insert(key, SharedValue::new(value))
+            .map(|v| v.into_inner());
+        util::run_fnonce(f);
+        retv
+    }
+
+    fn _insert_and_post_process<T, E>(
+        &self,
+        key: K,
+        value: V,
+        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<V>, Result<T, E>) {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let mut shard = unsafe { self._yield_write_shard(idx) };
+
+        let retv = shard
+            .insert(key, SharedValue::new(value))
+            .map(|v| v.into_inner());
+
+        let res = if let Some(ref prev_v) = retv {
+            util::run_fnonce_with_val(prev_v, key_exists_func)
+        } else {
+            util::run_fnonce_with_result(not_exists_func)
+        };
+        (retv, res)
+    }
+
     fn _remove<Q>(&self, key: &Q) -> Option<(K, V)>
     where
         K: Borrow<Q>,
@@ -688,6 +807,55 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         let mut shard = unsafe { self._yield_write_shard(idx) };
 
         shard.remove_entry(key).map(|(k, v)| (k, v.into_inner()))
+    }
+
+    fn _remove_and_post_process_if_key_exist<Q>(
+        &self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&K, &V),
+    ) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let mut shard = unsafe { self._yield_write_shard(idx) };
+
+        let kv = shard.remove_entry(key).map(|(k, v)| (k, v.into_inner()));
+        if let Some((ref k, ref v)) = kv {
+            util::run_fnonce_with_2val(k, v, key_exists_func);
+        }
+        kv
+    }
+
+    fn _remove_and_post_process<Q, T, E>(
+        &self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&Q, &V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<(K, V)>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let mut shard = unsafe { self._yield_write_shard(idx) };
+
+        let kv = shard.remove_entry(key).map(|(k, v)| (k, v.into_inner()));
+        let res = match kv {
+            Some((ref k, ref v)) => {
+                let _promote_panic_to_abort = util::AbortOnPanic;
+                key_exists_func(k.borrow(), v)
+            }
+            None => util::run_fnonce_with_result(not_exists_func),
+        };
+        (kv, res)
     }
 
     fn _remove_if<Q>(&self, key: &Q, f: impl FnOnce(&K, &V) -> bool) -> Option<(K, V)>
@@ -742,6 +910,77 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         } else {
             None
         }
+    }
+
+    fn _get_with<Q, T, E>(
+        &'a self,
+        key: &Q,
+        post_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let shard = unsafe { self._yield_read_shard(idx) };
+
+        let val = if let Some((kptr, vptr)) = shard.get_key_value(key) {
+            unsafe {
+                let kptr = util::change_lifetime_const(kptr);
+
+                let vptr = util::change_lifetime_const(vptr);
+
+                Some(Ref::new(shard, kptr, vptr.get()))
+            }
+        } else {
+            None
+        };
+        let ret = post_func();
+        (val, ret)
+    }
+
+    fn _get_and_post_process<Q, T, E>(
+        &'a self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let shard = unsafe { self._yield_read_shard(idx) };
+
+        let val = if let Some((kptr, vptr)) = shard.get_key_value(key) {
+            unsafe {
+                let kptr = util::change_lifetime_const(kptr);
+
+                let vptr = util::change_lifetime_const(vptr);
+
+                Some(Ref::new(shard, kptr, vptr.get()))
+            }
+        } else {
+            None
+        };
+        // # Safety
+        //
+        // If the closure panics, we must abort otherwise we could double drop `T`
+        let ret = {
+            let _promote_panic_to_abort = util::AbortOnPanic;
+            if let Some(ref kv) = val {
+                key_exists_func(kv.value())
+            } else {
+                not_exists_func()
+            }
+        };
+        (val, ret)
     }
 
     fn _get_mut<Q>(&'a self, key: &Q) -> Option<RefMut<'a, K, V, S>>
