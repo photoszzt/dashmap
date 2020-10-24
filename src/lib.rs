@@ -345,7 +345,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         value: V,
         key_exists_func: impl FnOnce(&V) -> Result<T, E>,
         not_exists_func: impl FnOnce() -> Result<T, E>,
-        post_func: impl FnOnce(),
+        post_func: Option<impl FnOnce()>,
     ) -> (Option<V>, Result<T, E>) {
         self._insert_and_post_process(key, value, key_exists_func, not_exists_func, post_func)
     }
@@ -527,7 +527,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
     }
 
     /// Get a immutable reference to an entry in the map. Before return execute `key_exists_func`
-    /// if key exists or execute not_exists_func if key doesn't exists. 
+    /// if key exists or execute not_exists_func if key doesn't exists.
     pub fn get_and_post_process<Q, T, E>(
         &'a self,
         key: &Q,
@@ -536,7 +536,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
     ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized
+        Q: Hash + Eq + ?Sized,
     {
         self._get_and_post_process(key, key_exists_func, not_exists_func)
     }
@@ -777,7 +777,7 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         value: V,
         key_exists_func: impl FnOnce(&V) -> Result<T, E>,
         not_exists_func: impl FnOnce() -> Result<T, E>,
-        post_func: impl FnOnce(),
+        post_func: Option<impl FnOnce()>,
     ) -> (Option<V>, Result<T, E>) {
         let hash = self.hash_usize(&key);
 
@@ -794,7 +794,9 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         } else {
             util::run_fnonce_with_result(not_exists_func)
         };
-        util::run_fnonce(post_func);
+        if let Some(post_func) = post_func {
+            util::run_fnonce(post_func);
+        }
         (retv, res)
     }
 
