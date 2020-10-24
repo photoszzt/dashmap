@@ -345,8 +345,9 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         value: V,
         key_exists_func: impl FnOnce(&V) -> Result<T, E>,
         not_exists_func: impl FnOnce() -> Result<T, E>,
-    ) -> (Option<V>, Result<T, E>) {
-        self._insert_and_post_process(key, value, key_exists_func, not_exists_func)
+        post_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<V>, Result<T, E>, Result<T, E>) {
+        self._insert_and_post_process(key, value, key_exists_func, not_exists_func, post_func)
     }
 
     /// Removes an entry from the map, returning the key and value if they existed in the map.
@@ -776,7 +777,8 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         value: V,
         key_exists_func: impl FnOnce(&V) -> Result<T, E>,
         not_exists_func: impl FnOnce() -> Result<T, E>,
-    ) -> (Option<V>, Result<T, E>) {
+        post_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<V>, Result<T, E>, Result<T, E>) {
         let hash = self.hash_usize(&key);
 
         let idx = self.determine_shard(hash);
@@ -792,7 +794,8 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         } else {
             util::run_fnonce_with_result(not_exists_func)
         };
-        (retv, res)
+        let post_res = util::run_fnonce_with_result(post_func);
+        (retv, res, post_res)
     }
 
     fn _remove<Q>(&self, key: &Q) -> Option<(K, V)>
