@@ -26,28 +26,12 @@ pub fn run_fnonce_with_result<T, E>(f: impl FnOnce() -> Result<T, E>) -> Result<
     f()
 }
 
-pub fn run_fnonce(f: impl FnOnce()) {
-    // # Safety
-    //
-    // If the closure panics, we must abort otherwise we could double drop `T`
-    let _promote_panic_to_abort = AbortOnPanic;
-    f();
-}
-
 pub fn run_fnonce_with_val<V, T, E>(v: &V, f: impl FnOnce(&V) -> Result<T, E>) -> Result<T, E> {
     // # Safety
     //
     // If the closure panics, we must abort otherwise we could double drop `T`
     let _promote_panic_to_abort = AbortOnPanic;
     f(v)
-}
-
-pub fn run_fnonce_with_2val<K, V>(k: &K, v: &V, f: impl FnOnce(&K, &V)) {
-    // # Safety
-    //
-    // If the closure panics, we must abort otherwise we could double drop `T`
-    let _promote_panic_to_abort = AbortOnPanic;
-    f(k, v);
 }
 
 /// # Safety

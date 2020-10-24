@@ -330,7 +330,12 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
     ///
     /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
     ///
-    pub fn insert_with(&self, key: K, value: V, f: impl FnOnce()) -> Option<V> {
+    pub fn insert_with<T, E>(
+        &self,
+        key: K,
+        value: V,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<V>, Result<T, E>) {
         self._insert_with(key, value, f)
     }
 
@@ -339,14 +344,19 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
     ///
     /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
     ///
-    pub fn insert_and_post_process<T, E>(
+    pub fn insert_and_post_process<T1, E1, T2, E2, T3, E3>(
         &self,
         key: K,
         value: V,
-        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
-        not_exists_func: impl FnOnce() -> Result<T, E>,
-        post_func: Option<impl FnOnce()>,
-    ) -> (Option<V>, Result<T, E>) {
+        key_exists_func: impl FnOnce(&V) -> Result<T1, E1>,
+        not_exists_func: impl FnOnce() -> Result<T2, E2>,
+        post_func: Option<impl FnOnce() -> Result<T3, E3>>,
+    ) -> (
+        Option<V>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+        Option<Result<T3, E3>>,
+    ) {
         self._insert_and_post_process(key, value, key_exists_func, not_exists_func, post_func)
     }
 
@@ -402,26 +412,12 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         self._remove_if(key, f)
     }
 
-    /// Removes an entry from the map, returning the key and value
-    /// It will execute the function post_func if key exists
-    pub fn remove_and_post_process_if_key_exist<Q>(
+    pub fn remove_and_post_process<Q, T1, E1, T2, E2>(
         &self,
         key: &Q,
-        post_func: impl FnOnce(&K, &V),
-    ) -> Option<(K, V)>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        self._remove_and_post_process_if_key_exist(key, post_func)
-    }
-
-    pub fn remove_and_post_process<Q, T, E>(
-        &self,
-        key: &Q,
-        key_exists_func: impl FnOnce(&Q, &V) -> Result<T, E>,
-        not_exists_func: impl FnOnce() -> Result<T, E>,
-    ) -> (Option<(K, V)>, Result<T, E>)
+        key_exists_func: impl FnOnce(&Q, &V) -> Result<T1, E1>,
+        not_exists_func: Option<impl FnOnce() -> Result<T2, E2>>,
+    ) -> (Option<(K, V)>, Option<Result<T1, E1>>, Option<Result<T2, E2>>)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -757,27 +753,11 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
             .map(|v| v.into_inner())
     }
 
-    fn _insert_with(&self, key: K, value: V, f: impl FnOnce()) -> Option<V> {
-        let hash = self.hash_usize(&key);
-
-        let idx = self.determine_shard(hash);
-
-        let mut shard = unsafe { self._yield_write_shard(idx) };
-
-        let retv = shard
-            .insert(key, SharedValue::new(value))
-            .map(|v| v.into_inner());
-        util::run_fnonce(f);
-        retv
-    }
-
-    fn _insert_and_post_process<T, E>(
+    fn _insert_with<T, E>(
         &self,
         key: K,
         value: V,
-        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
-        not_exists_func: impl FnOnce() -> Result<T, E>,
-        post_func: Option<impl FnOnce()>,
+        f: impl FnOnce() -> Result<T, E>,
     ) -> (Option<V>, Result<T, E>) {
         let hash = self.hash_usize(&key);
 
@@ -788,16 +768,47 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         let retv = shard
             .insert(key, SharedValue::new(value))
             .map(|v| v.into_inner());
+        let ret = util::run_fnonce_with_result(f);
+        (retv, ret)
+    }
 
-        let res = if let Some(ref prev_v) = retv {
-            util::run_fnonce_with_val(prev_v, key_exists_func)
+    fn _insert_and_post_process<T1, E1, T2, E2, T3, E3>(
+        &self,
+        key: K,
+        value: V,
+        key_exists_func: impl FnOnce(&V) -> Result<T1, E1>,
+        not_exists_func: impl FnOnce() -> Result<T2, E2>,
+        post_func: Option<impl FnOnce() -> Result<T3, E3>>,
+    ) -> (
+        Option<V>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+        Option<Result<T3, E3>>,
+    ) {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let mut shard = unsafe { self._yield_write_shard(idx) };
+
+        let retv = shard
+            .insert(key, SharedValue::new(value))
+            .map(|v| v.into_inner());
+
+        let (key_exists_ret, not_exists_ret) = if let Some(ref prev_v) = retv {
+            (
+                Some(util::run_fnonce_with_val(prev_v, key_exists_func)),
+                None,
+            )
         } else {
-            util::run_fnonce_with_result(not_exists_func)
+            (None, Some(util::run_fnonce_with_result(not_exists_func)))
         };
-        if let Some(post_func) = post_func {
-            util::run_fnonce(post_func);
-        }
-        (retv, res)
+        let post_ret = if let Some(post_func) = post_func {
+            Some(util::run_fnonce_with_result(post_func))
+        } else {
+            None
+        };
+        (retv, key_exists_ret, not_exists_ret, post_ret)
     }
 
     fn _remove<Q>(&self, key: &Q) -> Option<(K, V)>
@@ -814,11 +825,12 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         shard.remove_entry(key).map(|(k, v)| (k, v.into_inner()))
     }
 
-    fn _remove_and_post_process_if_key_exist<Q>(
+    fn _remove_and_post_process<Q, T1, E1, T2, E2>(
         &self,
         key: &Q,
-        key_exists_func: impl FnOnce(&K, &V),
-    ) -> Option<(K, V)>
+        key_exists_func: impl FnOnce(&Q, &V) -> Result<T1, E1>,
+        not_exists_func: Option<impl FnOnce() -> Result<T2, E2>>,
+    ) -> (Option<(K, V)>, Option<Result<T1, E1>>, Option<Result<T2, E2>>)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -830,37 +842,23 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         let mut shard = unsafe { self._yield_write_shard(idx) };
 
         let kv = shard.remove_entry(key).map(|(k, v)| (k, v.into_inner()));
-        if let Some((ref k, ref v)) = kv {
-            util::run_fnonce_with_2val(k, v, key_exists_func);
-        }
-        kv
-    }
-
-    fn _remove_and_post_process<Q, T, E>(
-        &self,
-        key: &Q,
-        key_exists_func: impl FnOnce(&Q, &V) -> Result<T, E>,
-        not_exists_func: impl FnOnce() -> Result<T, E>,
-    ) -> (Option<(K, V)>, Result<T, E>)
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        let hash = self.hash_usize(&key);
-
-        let idx = self.determine_shard(hash);
-
-        let mut shard = unsafe { self._yield_write_shard(idx) };
-
-        let kv = shard.remove_entry(key).map(|(k, v)| (k, v.into_inner()));
-        let res = match kv {
+        let (key_exists_ret, not_exists_ret) = match kv {
             Some((ref k, ref v)) => {
                 let _promote_panic_to_abort = util::AbortOnPanic;
-                key_exists_func(k.borrow(), v)
+                (Some(key_exists_func(k.borrow(), v)), None)
             }
-            None => util::run_fnonce_with_result(not_exists_func),
+            None => {
+                match not_exists_func {
+                    Some(not_exists_func) => {
+                        (None, Some(util::run_fnonce_with_result(not_exists_func)))
+                    }
+                    None => {
+                        (None, None)
+                    }
+                }
+            },
         };
-        (kv, res)
+        (kv, key_exists_ret, not_exists_ret)
     }
 
     fn _remove_if<Q>(&self, key: &Q, f: impl FnOnce(&K, &V) -> bool) -> Option<(K, V)>

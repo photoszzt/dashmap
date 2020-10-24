@@ -32,16 +32,26 @@ pub trait Map<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> {
 
     fn _insert(&self, key: K, value: V) -> Option<V>;
 
-    fn _insert_with(&self, key: K, value: V, f: impl FnOnce()) -> Option<V>;
-
-    fn _insert_and_post_process<T, E>(
+    fn _insert_with<T, E>(
         &self,
         key: K,
         value: V,
-        key_exists_func: impl FnOnce(&V) -> Result<T, E>,
-        not_exists_func: impl FnOnce() -> Result<T, E>,
-        post_func: Option<impl FnOnce()>,
+        f: impl FnOnce() -> Result<T, E>,
     ) -> (Option<V>, Result<T, E>);
+
+    fn _insert_and_post_process<T1, E1, T2, E2, T3, E3>(
+        &self,
+        key: K,
+        value: V,
+        key_exists_func: impl FnOnce(&V) -> Result<T1, E1>,
+        not_exists_func: impl FnOnce() -> Result<T2, E2>,
+        post_func: Option<impl FnOnce() -> Result<T3, E3>>,
+    ) -> (
+        Option<V>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+        Option<Result<T3, E3>>,
+    );
 
     fn _remove<Q>(&self, key: &Q) -> Option<(K, V)>
     where
@@ -53,21 +63,12 @@ pub trait Map<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> {
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized;
 
-    fn _remove_and_post_process_if_key_exist<Q>(
+    fn _remove_and_post_process<Q, T1, E1, T2, E2>(
         &self,
         key: &Q,
-        key_exists_func: impl FnOnce(&K, &V),
-    ) -> Option<(K, V)>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized;
-
-    fn _remove_and_post_process<Q, T, E>(
-        &self,
-        key: &Q,
-        key_exists_func: impl FnOnce(&Q, &V) -> Result<T, E>,
-        not_exists_func: impl FnOnce() -> Result<T, E>,
-    ) -> (Option<(K, V)>, Result<T, E>)
+        key_exists_func: impl FnOnce(&Q, &V) -> Result<T1, E1>,
+        not_exists_func: Option<impl FnOnce() -> Result<T2, E2>>,
+    ) -> (Option<(K, V)>, Option<Result<T1, E1>>, Option<Result<T2, E2>>)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized;
