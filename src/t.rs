@@ -40,8 +40,8 @@ pub trait Map<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> {
         value: V,
         key_exists_func: impl FnOnce(&V) -> Result<T, E>,
         not_exists_func: impl FnOnce() -> Result<T, E>,
-        post_func: impl FnOnce() -> Result<T, E>,
-    ) -> (Option<V>, Result<T, E>, Result<T, E>);
+        post_func: impl FnOnce(),
+    ) -> (Option<V>, Result<T, E>);
 
     fn _remove<Q>(&self, key: &Q) -> Option<(K, V)>
     where
