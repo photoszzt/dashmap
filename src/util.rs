@@ -38,7 +38,6 @@ pub fn run_fnonce_with_val<V, T, E>(v: &V, f: impl FnOnce(&V) -> Result<T, E>) -
 ///
 /// Requires that you ensure the reference does not become invalid.
 /// The object has to outlive the reference.
-
 pub unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
     &*(x as *const T)
 }
@@ -47,7 +46,6 @@ pub unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
 ///
 /// Requires that you ensure the reference does not become invalid.
 /// The object has to outlive the reference.
-
 pub unsafe fn change_lifetime_mut<'a, 'b, T>(x: &'a mut T) -> &'b mut T {
     &mut *(x as *mut T)
 }
@@ -62,7 +60,6 @@ pub unsafe fn change_lifetime_mut<'a, 'b, T>(x: &'a mut T) -> &'b mut T {
 ///
 /// This type is meant to be an implementation detail, but must be exposed due to the `Dashmap::shards`
 #[repr(transparent)]
-
 pub struct SharedValue<T> {
     value: UnsafeCell<T>,
 }
@@ -83,7 +80,6 @@ unsafe impl<T: Sync> Sync for SharedValue<T> {}
 
 impl<T> SharedValue<T> {
     /// Create a new `SharedValue<T>`
-
     pub const fn new(value: T) -> Self {
         Self {
             value: UnsafeCell::new(value),
@@ -91,25 +87,21 @@ impl<T> SharedValue<T> {
     }
 
     /// Get a shared reference to `T`
-
     pub fn get(&self) -> &T {
         unsafe { &*self.value.get() }
     }
 
     /// Get an unique reference to `T`
-
     pub fn get_mut(&mut self) -> &mut T {
         unsafe { &mut *self.value.get() }
     }
 
     /// Unwraps the value
-
     pub fn into_inner(self) -> T {
         self.value.into_inner()
     }
 
     /// Get a mutable raw pointer to the underlying value
-
     pub(crate) fn as_ptr(&self) -> *mut T {
         self.value.get()
     }
