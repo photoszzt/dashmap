@@ -65,7 +65,11 @@ pub trait Map<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + Clone + BuildHasher> {
         key: &Q,
         key_exists_func: impl FnOnce(&Q, &V) -> Result<T1, E1>,
         not_exists_func: Option<impl FnOnce() -> Result<T2, E2>>,
-    ) -> (Option<(K, V)>, Option<Result<T1, E1>>, Option<Result<T2, E2>>)
+    ) -> (
+        Option<(K, V)>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+    )
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized;

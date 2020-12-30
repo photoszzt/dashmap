@@ -21,6 +21,7 @@ pub mod rayon {
 use cfg_if::cfg_if;
 use core::borrow::Borrow;
 use core::fmt;
+use core::future::Future;
 use core::hash::{BuildHasher, Hash, Hasher};
 use core::iter::FromIterator;
 use core::ops::{BitAnd, BitOr, Shl, Shr, Sub};
@@ -345,6 +346,56 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         self._insert_and_post_process(key, value, key_exists_func, not_exists_func, post_func)
     }
 
+    /// Inserts a key and a value into the map. After insert the value, execute key_exists_func if
+    /// key already present before this insert or not_exists_func if key is newly insert.
+    ///
+    /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
+    ///
+    /// It's the same as insert_and_post_process besides the function are async
+    pub async fn insert_and_post_process_async_fn<T1, E1, T2, E2, T3, E3, Fut1, Fut2, Fut3>(
+        &self,
+        key: K,
+        value: V,
+        key_exists_func: impl FnOnce(&V) -> Fut1,
+        not_exists_func: impl FnOnce() -> Fut2,
+        post_func: Option<impl FnOnce() -> Fut3>,
+    ) -> (
+        Option<V>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+        Option<Result<T3, E3>>,
+    )
+    where
+        Fut1: Future<Output = Result<T1, E1>>,
+        Fut2: Future<Output = Result<T2, E2>>,
+        Fut3: Future<Output = Result<T3, E3>>,
+    {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let mut shard = unsafe { self._yield_write_shard(idx) };
+
+        let retv = shard
+            .insert(key, SharedValue::new(value))
+            .map(|v| v.into_inner());
+
+        let (key_exists_ret, not_exists_ret) = if let Some(ref prev_v) = retv {
+            (
+                Some(util::run_fnonce_with_val_async_fn(prev_v, key_exists_func).await),
+                None,
+            )
+        } else {
+            (None, Some(util::run_fnonce_async_fn(not_exists_func).await))
+        };
+        let post_ret = if let Some(post_func) = post_func {
+            Some(util::run_fnonce_async_fn(post_func).await)
+        } else {
+            None
+        };
+        (retv, key_exists_ret, not_exists_ret, post_ret)
+    }
+
     /// Removes an entry from the map, returning the key and value if they existed in the map.
     ///
     /// **Locking behaviour:** May deadlock if called when holding any sort of reference into the map.
@@ -400,7 +451,11 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         key: &Q,
         key_exists_func: impl FnOnce(&Q, &V) -> Result<T1, E1>,
         not_exists_func: Option<impl FnOnce() -> Result<T2, E2>>,
-    ) -> (Option<(K, V)>, Option<Result<T1, E1>>, Option<Result<T2, E2>>)
+    ) -> (
+        Option<(K, V)>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+    )
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -514,6 +569,48 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> DashMap<K, V, S> {
         Q: Hash + Eq + ?Sized,
     {
         self._get_and_post_process(key, key_exists_func, not_exists_func)
+    }
+
+    pub async fn get_and_post_process_ke_async<Q, T, E, Fut1>(
+        &'a self,
+        key: &Q,
+        key_exists_func: impl FnOnce(&V) -> Fut1,
+        not_exists_func: impl FnOnce() -> Result<T, E>,
+    ) -> (Option<Ref<'a, K, V, S>>, Result<T, E>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+        Fut1: Future<Output = Result<T, E>>,
+    {
+        let hash = self.hash_usize(&key);
+
+        let idx = self.determine_shard(hash);
+
+        let shard = unsafe { self._yield_read_shard(idx) };
+
+        let val = if let Some((kptr, vptr)) = shard.get_key_value(key) {
+            unsafe {
+                let kptr = util::change_lifetime_const(kptr);
+
+                let vptr = util::change_lifetime_const(vptr);
+
+                Some(Ref::new(shard, kptr, vptr.get()))
+            }
+        } else {
+            None
+        };
+        // # Safety
+        //
+        // If the closure panics, we must abort otherwise we could double drop `T`
+        let ret = {
+            let _promote_panic_to_abort = util::AbortOnPanic;
+            if let Some(ref kv) = val {
+                key_exists_func(kv.value()).await
+            } else {
+                not_exists_func()
+            }
+        };
+        (val, ret)
     }
 
     /// Remove excess capacity to reduce memory usage.
@@ -799,7 +896,11 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
         key: &Q,
         key_exists_func: impl FnOnce(&Q, &V) -> Result<T1, E1>,
         not_exists_func: Option<impl FnOnce() -> Result<T2, E2>>,
-    ) -> (Option<(K, V)>, Option<Result<T1, E1>>, Option<Result<T2, E2>>)
+    ) -> (
+        Option<(K, V)>,
+        Option<Result<T1, E1>>,
+        Option<Result<T2, E2>>,
+    )
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -816,15 +917,11 @@ impl<'a, K: 'a + Eq + Hash, V: 'a, S: 'a + BuildHasher + Clone> Map<'a, K, V, S>
                 let _promote_panic_to_abort = util::AbortOnPanic;
                 (Some(key_exists_func(k.borrow(), v)), None)
             }
-            None => {
-                match not_exists_func {
-                    Some(not_exists_func) => {
-                        (None, Some(util::run_fnonce_with_result(not_exists_func)))
-                    }
-                    None => {
-                        (None, None)
-                    }
+            None => match not_exists_func {
+                Some(not_exists_func) => {
+                    (None, Some(util::run_fnonce_with_result(not_exists_func)))
                 }
+                None => (None, None),
             },
         };
         (kv, key_exists_ret, not_exists_ret)

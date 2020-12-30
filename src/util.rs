@@ -1,6 +1,7 @@
 //! This module is full of hackery and dark magic.
 //! Either spend a day fixing it and quietly submit a PR or don't mention it to anybody.
 use core::cell::UnsafeCell;
+use core::future::Future;
 use core::{mem, ptr};
 
 pub const fn ptr_size_bits() -> usize {
@@ -26,12 +27,37 @@ pub fn run_fnonce_with_result<T, E>(f: impl FnOnce() -> Result<T, E>) -> Result<
     f()
 }
 
+pub async fn run_fnonce_async_fn<T, E, Fut>(f: impl FnOnce() -> Fut) -> Result<T, E>
+where
+    Fut: Future<Output = Result<T, E>>,
+{
+    // # Safety
+    //
+    // If the closure panics, we must abort otherwise we could double drop `T`
+    let _promote_panic_to_abort = AbortOnPanic;
+    f().await
+}
+
 pub fn run_fnonce_with_val<V, T, E>(v: &V, f: impl FnOnce(&V) -> Result<T, E>) -> Result<T, E> {
     // # Safety
     //
     // If the closure panics, we must abort otherwise we could double drop `T`
     let _promote_panic_to_abort = AbortOnPanic;
     f(v)
+}
+
+pub async fn run_fnonce_with_val_async_fn<'a, V: 'a, T, E, Fut>(
+    v: &'a V,
+    f: impl FnOnce(&'a V) -> Fut,
+) -> Result<T, E>
+where
+    Fut: Future<Output = Result<T, E>>,
+{
+    // # Safety
+    //
+    // If the closure panics, we must abort otherwise we could double drop `T`
+    let _promote_panic_to_abort = AbortOnPanic;
+    f(v).await
 }
 
 /// # Safety
